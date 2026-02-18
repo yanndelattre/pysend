@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>py-send</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-logo">█</span>
+        <span class="brand-text">py-send</span>
+      </div>
+      <div class="session">
+        <span id="session-email" class="session-email"></span>
+        <button id="signout-btn" class="btn small ghost hidden">Se déconnecter</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel auth-panel" id="auth-panel">
+        <h1>Connexion</h1>
+        <p class="muted">Plateforme de messagerie rétro et pixel.</p>
+        <form id="auth-form" class="stack">
+          <label class="field">
+            <span>Email</span>
+            <input type="email" id="email" placeholder="toi@email.com" required />
+          </label>
+          <label class="field">
+            <span>Mot de passe</span>
+            <input type="password" id="password" placeholder="********" required />
+          </label>
+          <label class="field">
+            <span>Nom d'affichage</span>
+            <input type="text" id="display-name" placeholder="Pseudo" />
+          </label>
+          <div class="actions">
+            <button type="submit" id="signin-btn" class="btn primary">Se connecter</button>
+            <button type="button" id="signup-btn" class="btn">Créer un compte</button>
+          </div>
+        </form>
+        <div id="auth-msg" class="message hidden"></div>
+      </section>
+
+      <section class="panel app-panel hidden" id="app-panel">
+        <div class="columns">
+          <div class="column">
+            <div class="panel-inner">
+              <div class="panel-header">
+                <h2>Salons</h2>
+                <button id="new-channel-btn" class="btn small">Nouveau</button>
+              </div>
+              <div class="list" id="channels-list"></div>
+              <div class="panel-footer">
+                <input id="channel-name" placeholder="Nom du salon" />
+                <button id="create-channel-btn" class="btn small">Créer</button>
+              </div>
+            </div>
+            <div class="panel-inner">
+              <div class="panel-header">
+                <h2>Amis</h2>
+              </div>
+              <div class="list" id="friends-list"></div>
+              <div class="panel-footer">
+                <input id="friend-email" placeholder="Email d'un ami" />
+                <button id="add-friend-btn" class="btn small">Ajouter</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="column chat-column">
+            <div class="panel-inner chat">
+              <div class="panel-header">
+                <div>
+                  <h2 id="channel-title">Choisir un salon</h2>
+                  <p id="channel-meta" class="muted small">---</p>
+                </div>
+              </div>
+              <div id="messages" class="messages"></div>
+              <form id="message-form" class="message-form">
+                <input id="message-input" placeholder="Ecrire un message..." autocomplete="off" />
+                <button class="btn primary small" type="submit">Envoyer</button>
+              </form>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>Retro chat powered by Supabase</span>
+    </footer>
+
+    <script src="config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
