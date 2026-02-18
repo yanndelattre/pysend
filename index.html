@@ -21,6 +21,7 @@
       </div>
       <div class="session">
         <span id="session-email" class="session-email"></span>
+        <button id="profile-btn" class="btn small">Profil</button>
         <button id="signout-btn" class="btn small ghost hidden">Se déconnecter</button>
       </div>
     </header>
@@ -45,6 +46,7 @@
           <div class="actions">
             <button type="submit" id="signin-btn" class="btn primary">Se connecter</button>
             <button type="button" id="signup-btn" class="btn">Créer un compte</button>
+            <button type="button" id="anonymous-btn" class="btn ghost">Entrer en anonyme</button>
           </div>
         </form>
         <div id="auth-msg" class="message hidden"></div>
@@ -58,9 +60,12 @@
                 <h2>Salons</h2>
                 <button id="new-channel-btn" class="btn small">Nouveau</button>
               </div>
+              <input id="channel-search" class="search" placeholder="Rechercher un salon..." />
               <div class="list" id="channels-list"></div>
               <div class="panel-footer">
                 <input id="channel-name" placeholder="Nom du salon" />
+                <input id="channel-icon" placeholder="Icone (ex: 💬)" />
+                <input id="channel-desc" placeholder="Description" />
                 <button id="create-channel-btn" class="btn small">Créer</button>
               </div>
             </div>
@@ -68,6 +73,7 @@
               <div class="panel-header">
                 <h2>Amis</h2>
               </div>
+              <input id="friend-search" class="search" placeholder="Rechercher un contact..." />
               <div class="list" id="friends-list"></div>
               <div class="panel-footer">
                 <input id="friend-email" placeholder="Email d'un ami" />
@@ -82,7 +88,9 @@
                 <div>
                   <h2 id="channel-title">Choisir un salon</h2>
                   <p id="channel-meta" class="muted small">---</p>
+                  <p id="channel-desc-view" class="muted small"></p>
                 </div>
+                <button id="favorite-btn" class="btn small ghost hidden">☆ Favori</button>
               </div>
               <div id="messages" class="messages"></div>
               <form id="message-form" class="message-form">
@@ -98,6 +106,39 @@
     <footer class="footer">
       <span>Retro chat powered by Supabase</span>
     </footer>
+
+    <div id="profile-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h2 id="profile-title">Profil</h2>
+          <button id="profile-close" class="btn small ghost">Fermer</button>
+        </div>
+        <div class="profile-grid">
+          <div class="profile-left">
+            <div class="avatar" id="profile-avatar">?</div>
+            <input id="profile-avatar-url" placeholder="URL avatar (optionnel)" />
+            <input id="profile-display-name" placeholder="Pseudo" />
+            <textarea id="profile-bio" placeholder="Bio"></textarea>
+            <div id="profile-action"></div>
+            <button id="profile-save" class="btn small primary">Enregistrer</button>
+          </div>
+          <div class="profile-right">
+            <div class="panel-inner">
+              <h3>Amis</h3>
+              <div id="profile-friends" class="list"></div>
+            </div>
+            <div class="panel-inner">
+              <h3>Demandes d'amis</h3>
+              <div id="profile-requests" class="list"></div>
+            </div>
+            <div class="panel-inner">
+              <h3>Favoris</h3>
+              <div id="profile-favorites" class="list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <script src="config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>

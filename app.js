@@ -5,29 +5,56 @@ const authPanel = document.getElementById("auth-panel");
 const appPanel = document.getElementById("app-panel");
 const authForm = document.getElementById("auth-form");
 const authMsg = document.getElementById("auth-msg");
-const signinBtn = document.getElementById("signin-btn");
 const signupBtn = document.getElementById("signup-btn");
 const signoutBtn = document.getElementById("signout-btn");
 const sessionEmail = document.getElementById("session-email");
+const profileBtn = document.getElementById("profile-btn");
+const anonymousBtn = document.getElementById("anonymous-btn");
 
 const channelsList = document.getElementById("channels-list");
 const friendsList = document.getElementById("friends-list");
 const createChannelBtn = document.getElementById("create-channel-btn");
 const newChannelBtn = document.getElementById("new-channel-btn");
 const channelNameInput = document.getElementById("channel-name");
+const channelIconInput = document.getElementById("channel-icon");
+const channelDescInput = document.getElementById("channel-desc");
+const channelSearchInput = document.getElementById("channel-search");
+const friendSearchInput = document.getElementById("friend-search");
 const friendEmailInput = document.getElementById("friend-email");
 const addFriendBtn = document.getElementById("add-friend-btn");
 
 const channelTitle = document.getElementById("channel-title");
 const channelMeta = document.getElementById("channel-meta");
+const channelDescView = document.getElementById("channel-desc-view");
+const favoriteBtn = document.getElementById("favorite-btn");
 const messagesEl = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message-input");
 
+const profileModal = document.getElementById("profile-modal");
+const profileClose = document.getElementById("profile-close");
+const profileAvatar = document.getElementById("profile-avatar");
+const profileAvatarUrl = document.getElementById("profile-avatar-url");
+const profileDisplayName = document.getElementById("profile-display-name");
+const profileBio = document.getElementById("profile-bio");
+const profileSave = document.getElementById("profile-save");
+const profileFriends = document.getElementById("profile-friends");
+const profileRequests = document.getElementById("profile-requests");
+const profileFavorites = document.getElementById("profile-favorites");
+const profileAction = document.getElementById("profile-action");
+
 let supabaseClient = null;
 let currentUser = null;
+let currentProfile = null;
 let currentChannel = null;
 let messageSubscription = null;
+let presenceInterval = null;
+let allChannels = [];
+let allFriends = [];
+let favorites = new Set();
+let onlineCounts = {};
+let isAnonymous = false;
+const messageIds = new Set();
 
 function showMessage(text, isError = false) {
   authMsg.textContent = text;
@@ -49,46 +76,60 @@ function ensureSupabase() {
 
 function setSessionUI(user) {
   currentUser = user;
+  isAnonymous = Boolean(user?.is_anonymous);
   if (user) {
-    sessionEmail.textContent = user.email || "";
+    sessionEmail.textContent = user.email || (isAnonymous ? "Anonyme" : "");
     signoutBtn.classList.remove("hidden");
+    profileBtn.classList.remove("hidden");
     authPanel.classList.add("hidden");
     appPanel.classList.remove("hidden");
   } else {
     sessionEmail.textContent = "";
     signoutBtn.classList.add("hidden");
+    profileBtn.classList.add("hidden");
+    favoriteBtn.classList.add("hidden");
     authPanel.classList.remove("hidden");
     appPanel.classList.add("hidden");
+  }
+  updateAnonymousUI();
+}
+
+function updateAnonymousUI() {
+  const disabled = isAnonymous;
+  friendEmailInput.disabled = disabled;
+  addFriendBtn.disabled = disabled;
+  if (disabled) {
+    friendsList.innerHTML = '<div class="list-item">Mode anonyme : amis désactivés</div>';
   }
 }
 
 async function ensureProfile(user, displayName = "") {
   const { data: profile } = await supabaseClient
     .from("profiles")
-    .select("id, display_name")
+    .select("id, display_name, avatar_url, bio, is_anonymous, email")
     .eq("id", user.id)
     .maybeSingle();
 
+  const defaultName = displayName || user.email?.split("@")[0] || "Anonyme";
   if (!profile) {
     await supabaseClient.from("profiles").insert({
       id: user.id,
       email: user.email,
-      display_name: displayName || user.email?.split("@")[0] || "Pixel"
+      display_name: defaultName,
+      is_anonymous: Boolean(user.is_anonymous)
     });
+    currentProfile = {
+      id: user.id,
+      email: user.email,
+      display_name: defaultName,
+      is_anonymous: Boolean(user.is_anonymous)
+    };
   } else if (displayName && profile.display_name !== displayName) {
     await supabaseClient.from("profiles").update({ display_name: displayName }).eq("id", user.id);
+    currentProfile = { ...profile, display_name: displayName };
+  } else {
+    currentProfile = profile;
   }
-}
-
-function renderList(container, items, onClick) {
-  container.innerHTML = "";
-  items.forEach((item) => {
-    const div = document.createElement("div");
-    div.className = "list-item" + (item.active ? " active" : "");
-    div.textContent = item.label;
-    div.addEventListener("click", () => onClick(item));
-    container.appendChild(div);
-  });
 }
 
 function formatDate(iso) {
@@ -104,19 +145,30 @@ function formatDate(iso) {
 
 function renderMessages(messages) {
   messagesEl.innerHTML = "";
+  messageIds.clear();
   messages.forEach((msg) => appendMessage(msg));
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 function appendMessage(msg) {
+  if (messageIds.has(msg.id)) return;
+  messageIds.add(msg.id);
   const row = document.createElement("div");
   row.className = "message-row";
+
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  meta.textContent = `${msg.author || "?"} · ${formatDate(msg.created_at)}`;
+  const author = document.createElement("span");
+  author.className = "author";
+  author.textContent = msg.author || "?";
+  author.dataset.userId = msg.user_id || "";
+  meta.appendChild(author);
+  meta.append(` - ${formatDate(msg.created_at)}`);
+
   const body = document.createElement("div");
   body.className = "message-body";
   body.textContent = msg.body;
+
   row.appendChild(meta);
   row.appendChild(body);
   messagesEl.appendChild(row);
@@ -126,7 +178,7 @@ function appendMessage(msg) {
 async function loadChannels() {
   const { data, error } = await supabaseClient
     .from("channels")
-    .select("id,name,is_dm,created_at")
+    .select("id,name,description,icon,created_by,is_dm,dm_pair,created_at")
     .order("created_at", { ascending: false });
   if (error) {
     console.error(error);
@@ -135,11 +187,42 @@ async function loadChannels() {
   return data || [];
 }
 
+async function loadOnlineCounts(channelIds) {
+  if (channelIds.length === 0) return {};
+  const { data, error } = await supabaseClient
+    .from("channel_members")
+    .select("channel_id,last_seen")
+    .in("channel_id", channelIds);
+  if (error) {
+    console.error(error);
+    return {};
+  }
+  const now = Date.now();
+  const counts = {};
+  (data || []).forEach((row) => {
+    const seen = row.last_seen ? new Date(row.last_seen).getTime() : 0;
+    if (now - seen <= 5 * 60 * 1000) {
+      counts[row.channel_id] = (counts[row.channel_id] || 0) + 1;
+    }
+  });
+  return counts;
+}
+
+async function loadFavorites() {
+  const { data } = await supabaseClient
+    .from("favorites")
+    .select("channel_id")
+    .eq("user_id", currentUser.id);
+  return new Set((data || []).map((r) => r.channel_id));
+}
+
 async function loadFriends() {
+  if (isAnonymous) return [];
   const { data: rels } = await supabaseClient
     .from("friendships")
     .select("friend_id")
-    .eq("user_id", currentUser.id);
+    .eq("user_id", currentUser.id)
+    .eq("status", "accepted");
 
   const friendIds = (rels || []).map((r) => r.friend_id).filter(Boolean);
   if (friendIds.length === 0) return [];
@@ -155,37 +238,88 @@ async function loadFriends() {
   }));
 }
 
+function renderChannelsList(list, query) {
+  const q = query.trim().toLowerCase();
+  list.innerHTML = "";
+  const filtered = allChannels.filter((c) => c.name.toLowerCase().includes(q));
+  filtered.forEach((channel) => {
+    const div = document.createElement("div");
+    div.className = "list-item" + (currentChannel?.id === channel.id ? " active" : "");
+    const left = document.createElement("span");
+    const icon = channel.icon || "💬";
+    left.textContent = `${icon} ${channel.name}`;
+    const right = document.createElement("span");
+    right.className = "channel-badge";
+    const count = onlineCounts[channel.id] || 0;
+    right.textContent = `${count} en ligne`;
+    const star = document.createElement("button");
+    star.className = "btn small ghost";
+    star.textContent = favorites.has(channel.id) ? "★" : "☆";
+    star.addEventListener("click", async (evt) => {
+      evt.stopPropagation();
+      await toggleFavorite(channel.id);
+      renderChannelsList(channelsList, channelSearchInput.value);
+      renderProfileFavorites();
+    });
+    div.appendChild(left);
+    div.appendChild(right);
+    div.appendChild(star);
+    div.addEventListener("click", async () => {
+      await selectChannel(channel);
+      renderChannelsList(channelsList, channelSearchInput.value);
+    });
+    list.appendChild(div);
+  });
+}
+
+function renderFriendsList(list, query) {
+  if (isAnonymous) return;
+  const q = query.trim().toLowerCase();
+  list.innerHTML = "";
+  const filtered = allFriends.filter((f) => f.label.toLowerCase().includes(q));
+  filtered.forEach((friend) => {
+    const div = document.createElement("div");
+    div.className = "list-item";
+    div.textContent = friend.label;
+    div.addEventListener("click", async () => {
+      await openDirectMessage(friend.id, friend.label);
+      renderChannelsList(channelsList, channelSearchInput.value);
+    });
+    list.appendChild(div);
+  });
+}
+
 async function refreshSidebar() {
-  const [channels, friends] = await Promise.all([loadChannels(), loadFriends()]);
-  renderList(
-    channelsList,
-    channels.map((c) => ({
-      id: c.id,
-      label: c.name,
-      active: currentChannel && currentChannel.id === c.id,
-      raw: c
-    })),
-    async (item) => {
-      await selectChannel(item.raw);
-      refreshSidebar();
-    }
-  );
-  renderList(
-    friendsList,
-    friends.map((f) => ({ id: f.id, label: f.label })),
-    async (item) => {
-      await openDirectMessage(item.id, item.label);
-      refreshSidebar();
-    }
-  );
+  const [channels, friends, favs] = await Promise.all([
+    loadChannels(),
+    loadFriends(),
+    loadFavorites()
+  ]);
+  allChannels = channels;
+  allFriends = friends;
+  favorites = favs;
+  onlineCounts = await loadOnlineCounts(allChannels.map((c) => c.id));
+  renderChannelsList(channelsList, channelSearchInput.value || "");
+  renderFriendsList(friendsList, friendSearchInput.value || "");
 }
 
 async function selectChannel(channel) {
   currentChannel = channel;
-  channelTitle.textContent = channel.name;
-  channelMeta.textContent = channel.is_dm ? "Salon privé" : "Salon public";
+  const creator = channel.created_by ? await getProfileById(channel.created_by) : null;
+  const count = onlineCounts[channel.id] || 0;
+  const icon = channel.icon || "💬";
+  channelTitle.textContent = `${icon} ${channel.name}`;
+  channelDescView.textContent = channel.description || "";
+  channelMeta.textContent = `${channel.is_dm ? "Salon privé" : "Salon public"} · Créé par ${
+    creator?.display_name || creator?.email || "?"
+  } · ${count} en ligne`;
+  favoriteBtn.classList.remove("hidden");
+  favoriteBtn.textContent = favorites.has(channel.id) ? "★ Favori" : "☆ Favori";
 
   await ensureMembership(channel.id, currentUser.id);
+  await touchPresence(channel.id);
+  if (presenceInterval) clearInterval(presenceInterval);
+  presenceInterval = setInterval(() => touchPresence(channel.id), 30000);
 
   const { data: messages, error } = await supabaseClient
     .from("messages")
@@ -198,6 +332,7 @@ async function selectChannel(channel) {
       id: m.id,
       body: m.body,
       created_at: m.created_at,
+      user_id: m.user_id,
       author: m.profiles?.display_name || m.profiles?.email || "Anonyme"
     }));
     renderMessages(mapped);
@@ -225,6 +360,7 @@ function subscribeToMessages(channelId) {
           id: msg.id,
           body: msg.body,
           created_at: msg.created_at,
+          user_id: msg.user_id,
           author: profile?.display_name || profile?.email || "Anonyme"
         });
       }
@@ -242,11 +378,23 @@ async function ensureMembership(channelId, userId) {
   );
 }
 
+async function touchPresence(channelId) {
+  await supabaseClient
+    .from("channel_members")
+    .update({ last_seen: new Date().toISOString() })
+    .eq("channel_id", channelId)
+    .eq("user_id", currentUser.id);
+}
+
 async function openDirectMessage(friendId, friendLabel) {
+  if (isAnonymous) {
+    alert("Mode anonyme : amis désactivés.");
+    return;
+  }
   const pair = [currentUser.id, friendId].sort().join("|");
   const { data: existing } = await supabaseClient
     .from("channels")
-    .select("id,name,is_dm")
+    .select("id,name,is_dm,description,icon,created_by")
     .eq("dm_pair", pair)
     .maybeSingle();
 
@@ -291,6 +439,20 @@ async function handleAuthSubmit(evt) {
   await refreshSidebar();
 }
 
+async function handleAnonymous() {
+  clearMessage();
+  try {
+    const { data, error } = await supabaseClient.auth.signInAnonymously();
+    if (error) throw error;
+    await ensureProfile(data.user, "");
+    setSessionUI(data.user);
+    await refreshSidebar();
+  } catch (err) {
+    console.error(err);
+    showMessage("Connexion anonyme indisponible sur ce projet.", true);
+  }
+}
+
 async function handleSignUp() {
   clearMessage();
   const email = document.getElementById("email").value.trim();
@@ -310,10 +472,17 @@ async function handleSignUp() {
 
 async function handleCreateChannel() {
   const name = channelNameInput.value.trim();
+  const icon = channelIconInput.value.trim();
+  const description = channelDescInput.value.trim();
   if (!name) return;
   const { data, error } = await supabaseClient
     .from("channels")
-    .insert({ name, created_by: currentUser.id })
+    .insert({
+      name,
+      icon: icon || null,
+      description: description || null,
+      created_by: currentUser.id
+    })
     .select()
     .single();
   if (error) {
@@ -321,12 +490,15 @@ async function handleCreateChannel() {
     return;
   }
   channelNameInput.value = "";
+  channelIconInput.value = "";
+  channelDescInput.value = "";
   await ensureMembership(data.id, currentUser.id);
   await selectChannel(data);
   refreshSidebar();
 }
 
 async function handleAddFriend() {
+  if (isAnonymous) return;
   const email = friendEmailInput.value.trim().toLowerCase();
   if (!email) return;
 
@@ -345,18 +517,7 @@ async function handleAddFriend() {
     return;
   }
 
-  const { error } = await supabaseClient.from("friendships").upsert(
-    {
-      user_id: currentUser.id,
-      friend_id: profile.id,
-      status: "accepted"
-    },
-    { onConflict: "user_id,friend_id" }
-  );
-  if (error) {
-    console.error(error);
-    return;
-  }
+  await sendFriendRequest(profile.id);
   friendEmailInput.value = "";
   refreshSidebar();
 }
@@ -366,12 +527,257 @@ async function handleSendMessage(evt) {
   const body = messageInput.value.trim();
   if (!body || !currentChannel) return;
 
-  const { error } = await supabaseClient.from("messages").insert({
-    channel_id: currentChannel.id,
-    user_id: currentUser.id,
-    body
+  const { data, error } = await supabaseClient
+    .from("messages")
+    .insert({
+      channel_id: currentChannel.id,
+      user_id: currentUser.id,
+      body
+    })
+    .select()
+    .single();
+  if (!error && data) {
+    appendMessage({
+      id: data.id,
+      body: data.body,
+      created_at: data.created_at,
+      user_id: data.user_id,
+      author: currentProfile?.display_name || currentUser.email || "Anonyme"
+    });
+    messageInput.value = "";
+  }
+}
+
+async function toggleFavorite(channelId) {
+  if (favorites.has(channelId)) {
+    await supabaseClient.from("favorites").delete().eq("channel_id", channelId);
+    favorites.delete(channelId);
+  } else {
+    await supabaseClient.from("favorites").insert({ user_id: currentUser.id, channel_id: channelId });
+    favorites.add(channelId);
+  }
+  favoriteBtn.textContent = favorites.has(channelId) ? "★ Favori" : "☆ Favori";
+}
+
+async function getProfileById(userId) {
+  const { data } = await supabaseClient
+    .from("profiles")
+    .select("id,display_name,email,avatar_url,bio")
+    .eq("id", userId)
+    .maybeSingle();
+  return data;
+}
+
+async function sendFriendRequest(targetId) {
+  if (isAnonymous) {
+    alert("Mode anonyme : amis désactivés.");
+    return;
+  }
+  await supabaseClient.from("friendships").upsert(
+    {
+      user_id: currentUser.id,
+      friend_id: targetId,
+      status: "pending"
+    },
+    { onConflict: "user_id,friend_id" }
+  );
+}
+
+async function getFriendStatus(targetId) {
+  const { data } = await supabaseClient
+    .from("friendships")
+    .select("user_id,friend_id,status")
+    .or(
+      `and(user_id.eq.${currentUser.id},friend_id.eq.${targetId}),and(user_id.eq.${targetId},friend_id.eq.${currentUser.id})`
+    );
+  const rows = data || [];
+  const accepted = rows.find((r) => r.status === "accepted");
+  if (accepted) return "accepted";
+  const outgoing = rows.find((r) => r.user_id === currentUser.id && r.status === "pending");
+  if (outgoing) return "outgoing";
+  const incoming = rows.find((r) => r.friend_id === currentUser.id && r.status === "pending");
+  if (incoming) return "incoming";
+  return "none";
+}
+
+async function acceptFriendRequest(requesterId) {
+  await supabaseClient
+    .from("friendships")
+    .update({ status: "accepted" })
+    .eq("user_id", requesterId)
+    .eq("friend_id", currentUser.id);
+  await supabaseClient.from("friendships").upsert(
+    {
+      user_id: currentUser.id,
+      friend_id: requesterId,
+      status: "accepted"
+    },
+    { onConflict: "user_id,friend_id" }
+  );
+}
+
+async function rejectFriendRequest(requesterId) {
+  await supabaseClient
+    .from("friendships")
+    .delete()
+    .eq("user_id", requesterId)
+    .eq("friend_id", currentUser.id);
+}
+
+async function loadFriendRequests() {
+  if (isAnonymous) return [];
+  const { data: incoming } = await supabaseClient
+    .from("friendships")
+    .select("user_id,status")
+    .eq("friend_id", currentUser.id)
+    .eq("status", "pending");
+
+  const requesterIds = (incoming || []).map((r) => r.user_id);
+  if (requesterIds.length === 0) return [];
+  const { data: profiles } = await supabaseClient
+    .from("profiles")
+    .select("id,display_name,email")
+    .in("id", requesterIds);
+  return profiles || [];
+}
+
+function openModal() {
+  profileModal.classList.remove("hidden");
+}
+
+function closeModal() {
+  profileModal.classList.add("hidden");
+}
+
+function renderProfileFavorites() {
+  profileFavorites.innerHTML = "";
+  allChannels
+    .filter((c) => favorites.has(c.id))
+    .forEach((c) => {
+      const div = document.createElement("div");
+      div.className = "list-item";
+      div.textContent = `${c.icon || "💬"} ${c.name}`;
+      div.addEventListener("click", async () => {
+        closeModal();
+        await selectChannel(c);
+        renderChannelsList(channelsList, channelSearchInput.value || "");
+      });
+      profileFavorites.appendChild(div);
+    });
+}
+
+async function openProfile(userId) {
+  if (!userId) return;
+  const profile = await getProfileById(userId);
+  if (!profile) return;
+  const isSelf = userId === currentUser.id;
+  profileAvatar.textContent = (profile.display_name || "P").slice(0, 1).toUpperCase();
+  if (profile.avatar_url) profileAvatar.style.backgroundImage = `url(${profile.avatar_url})`;
+  else profileAvatar.style.backgroundImage = "none";
+  profileAvatarUrl.value = profile.avatar_url || "";
+  profileDisplayName.value = profile.display_name || "";
+  profileBio.value = profile.bio || "";
+
+  profileAvatarUrl.disabled = !isSelf;
+  profileDisplayName.disabled = !isSelf;
+  profileBio.disabled = !isSelf;
+  profileSave.classList.toggle("hidden", !isSelf);
+
+  profileAction.innerHTML = "";
+  if (!isSelf && !isAnonymous) {
+    const status = await getFriendStatus(userId);
+    const btn = document.createElement("button");
+    btn.className = "btn small";
+    if (status === "accepted") {
+      btn.textContent = "Déjà ami";
+      btn.disabled = true;
+    } else if (status === "outgoing") {
+      btn.textContent = "Demande envoyée";
+      btn.disabled = true;
+    } else if (status === "incoming") {
+      btn.textContent = "Accepter la demande";
+      btn.addEventListener("click", async () => {
+        await acceptFriendRequest(userId);
+        btn.textContent = "Ami ajouté";
+        btn.disabled = true;
+      });
+    } else {
+      btn.textContent = "Ajouter en ami";
+      btn.addEventListener("click", async () => {
+        await sendFriendRequest(userId);
+        btn.textContent = "Demande envoyée";
+        btn.disabled = true;
+      });
+    }
+    profileAction.appendChild(btn);
+  }
+
+  if (isSelf) {
+    await renderProfileData();
+  } else {
+    profileFriends.innerHTML = '<div class="list-item">---</div>';
+    profileRequests.innerHTML = '<div class="list-item">---</div>';
+    profileFavorites.innerHTML = '<div class="list-item">---</div>';
+  }
+  openModal();
+}
+
+async function renderProfileData() {
+  if (isAnonymous) {
+    profileFriends.innerHTML = '<div class="list-item">Mode anonyme</div>';
+    profileRequests.innerHTML = '<div class="list-item">Mode anonyme</div>';
+    profileFavorites.innerHTML = '<div class="list-item">---</div>';
+    return;
+  }
+
+  profileFriends.innerHTML = "";
+  allFriends.forEach((f) => {
+    const div = document.createElement("div");
+    div.className = "list-item";
+    div.textContent = f.label;
+    profileFriends.appendChild(div);
   });
-  if (!error) messageInput.value = "";
+
+  profileRequests.innerHTML = "";
+  const requests = await loadFriendRequests();
+  requests.forEach((r) => {
+    const div = document.createElement("div");
+    div.className = "list-item";
+    div.textContent = r.display_name || r.email;
+    const accept = document.createElement("button");
+    accept.className = "btn small";
+    accept.textContent = "Accepter";
+    accept.addEventListener("click", async () => {
+      await acceptFriendRequest(r.id);
+      await refreshSidebar();
+      await renderProfileData();
+    });
+    const reject = document.createElement("button");
+    reject.className = "btn small ghost";
+    reject.textContent = "Refuser";
+    reject.addEventListener("click", async () => {
+      await rejectFriendRequest(r.id);
+      await refreshSidebar();
+      await renderProfileData();
+    });
+    div.appendChild(accept);
+    div.appendChild(reject);
+    profileRequests.appendChild(div);
+  });
+
+  renderProfileFavorites();
+}
+
+async function handleProfileSave() {
+  await supabaseClient
+    .from("profiles")
+    .update({
+      display_name: profileDisplayName.value.trim(),
+      avatar_url: profileAvatarUrl.value.trim() || null,
+      bio: profileBio.value.trim() || null
+    })
+    .eq("id", currentUser.id);
+  await ensureProfile(currentUser);
 }
 
 async function init() {
@@ -379,14 +785,38 @@ async function init() {
 
   authForm.addEventListener("submit", handleAuthSubmit);
   signupBtn.addEventListener("click", handleSignUp);
+  anonymousBtn.addEventListener("click", handleAnonymous);
   signoutBtn.addEventListener("click", async () => {
     await supabaseClient.auth.signOut();
     setSessionUI(null);
   });
+  profileBtn.addEventListener("click", async () => {
+    await openProfile(currentUser.id);
+  });
+  profileClose.addEventListener("click", closeModal);
+  profileSave.addEventListener("click", handleProfileSave);
+
   createChannelBtn.addEventListener("click", handleCreateChannel);
   newChannelBtn.addEventListener("click", () => channelNameInput.focus());
   addFriendBtn.addEventListener("click", handleAddFriend);
   messageForm.addEventListener("submit", handleSendMessage);
+  favoriteBtn.addEventListener("click", async () => {
+    if (currentChannel) await toggleFavorite(currentChannel.id);
+  });
+
+  messagesEl.addEventListener("click", async (evt) => {
+    const target = evt.target;
+    if (target.classList.contains("author")) {
+      await openProfile(target.dataset.userId);
+    }
+  });
+
+  channelSearchInput.addEventListener("input", () =>
+    renderChannelsList(channelsList, channelSearchInput.value)
+  );
+  friendSearchInput.addEventListener("input", () =>
+    renderFriendsList(friendsList, friendSearchInput.value)
+  );
 
   const { data } = await supabaseClient.auth.getSession();
   const user = data?.session?.user || null;
@@ -397,13 +827,19 @@ async function init() {
   }
 
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
-    const user = session?.user || null;
-    setSessionUI(user);
-    if (user) {
-      await ensureProfile(user);
+    const nextUser = session?.user || null;
+    setSessionUI(nextUser);
+    if (nextUser) {
+      await ensureProfile(nextUser);
       await refreshSidebar();
     }
   });
+
+  setInterval(async () => {
+    if (currentUser) {
+      await refreshSidebar();
+    }
+  }, 60000);
 }
 
 init();
