@@ -102,6 +102,7 @@ function incrementUnread(channelId) {
 }
 
 function showToast(title, body) {
+  if (!toastContainer) return;
   const toast = document.createElement("div");
   toast.className = "toast";
   const t = document.createElement("div");
@@ -125,13 +126,15 @@ async function enableBrowserNotifications() {
   }
   if (Notification.permission === "granted") {
     browserNotificationsEnabled = true;
-    notificationsBtn.textContent = "Notif: ON";
+    if (notificationsBtn) notificationsBtn.textContent = "Notif: ON";
     showToast("Notifications", "Notifications navigateur actives.");
     return;
   }
   const permission = await Notification.requestPermission();
   browserNotificationsEnabled = permission === "granted";
-  notificationsBtn.textContent = browserNotificationsEnabled ? "Notif: ON" : "Notif: OFF";
+  if (notificationsBtn) {
+    notificationsBtn.textContent = browserNotificationsEnabled ? "Notif: ON" : "Notif: OFF";
+  }
   showToast(
     "Notifications",
     browserNotificationsEnabled ? "Permission accordee." : "Permission refusee."
@@ -144,14 +147,14 @@ function setSessionUI(user) {
   if (user) {
     sessionEmail.textContent = user.email || (isAnonymous ? "Anonyme" : "");
     signoutBtn.classList.remove("hidden");
-    notificationsBtn.classList.remove("hidden");
+    if (notificationsBtn) notificationsBtn.classList.remove("hidden");
     profileBtn.classList.remove("hidden");
     authPanel.classList.add("hidden");
     appPanel.classList.remove("hidden");
   } else {
     sessionEmail.textContent = "";
     signoutBtn.classList.add("hidden");
-    notificationsBtn.classList.add("hidden");
+    if (notificationsBtn) notificationsBtn.classList.add("hidden");
     profileBtn.classList.add("hidden");
     favoriteBtn.classList.add("hidden");
     authPanel.classList.remove("hidden");
@@ -1006,8 +1009,10 @@ async function handleProfileSave() {
 
 async function init() {
   ensureSupabase();
-  notificationsBtn.textContent =
-    "Notification" in window && Notification.permission === "granted" ? "Notif: ON" : "Notifications";
+  if (notificationsBtn) {
+    notificationsBtn.textContent =
+      "Notification" in window && Notification.permission === "granted" ? "Notif: ON" : "Notifications";
+  }
   browserNotificationsEnabled = "Notification" in window && Notification.permission === "granted";
 
   authForm.addEventListener("submit", handleAuthSubmit);
@@ -1025,7 +1030,9 @@ async function init() {
     updateDocumentTitle();
     setSessionUI(null);
   });
-  notificationsBtn.addEventListener("click", enableBrowserNotifications);
+  if (notificationsBtn) {
+    notificationsBtn.addEventListener("click", enableBrowserNotifications);
+  }
   profileBtn.addEventListener("click", async () => {
     await openProfile(currentUser.id);
   });
