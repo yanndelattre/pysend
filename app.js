@@ -699,6 +699,7 @@ async function handleCreateChannel() {
     .single();
   if (error) {
     console.error(error);
+    alert(`Impossible de creer le salon: ${error.message}`);
     return;
   }
   channelNameInput.value = "";
@@ -706,7 +707,7 @@ async function handleCreateChannel() {
   channelDescInput.value = "";
   await ensureMembership(data.id, currentUser.id);
   await selectChannel(data);
-  refreshSidebar();
+  await refreshSidebar();
 }
 
 async function handleAddFriend() {

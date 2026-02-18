@@ -105,10 +105,7 @@ create policy "channels_select_all" on channels
     auth.uid() is not null
     and (
       is_dm = false
-      or exists (
-        select 1 from channel_members cm
-        where cm.channel_id = channels.id and cm.user_id = auth.uid()
-      )
+      or position(auth.uid()::text in coalesce(dm_pair, '')) > 0
     )
   );
 create policy "channels_insert_authenticated" on channels
