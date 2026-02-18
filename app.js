@@ -67,6 +67,8 @@ let lastTypingBroadcastAt = 0;
 const unreadByChannel = new Map();
 const baseTitle = document.title;
 let browserNotificationsEnabled = false;
+let audioCtx = null;
+let wasHidden = false;
 
 function showMessage(text, isError = false) {
   authMsg.textContent = text;
@@ -89,6 +91,31 @@ function ensureSupabase() {
 function updateDocumentTitle() {
   const totalUnread = Array.from(unreadByChannel.values()).reduce((acc, n) => acc + n, 0);
   document.title = totalUnread > 0 ? `(${totalUnread}) ${baseTitle}` : baseTitle;
+}
+
+function initAudioContext() {
+  if (!audioCtx && "AudioContext" in window) {
+    audioCtx = new AudioContext();
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().catch(() => {});
+  }
+}
+
+function playBeep(kind = "incoming") {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "square";
+  osc.frequency.value = kind === "sent" ? 760 : 520;
+  gain.gain.value = 0.0001;
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  gain.gain.exponentialRampToValueAtTime(0.05, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+  osc.start(now);
+  osc.stop(now + 0.17);
 }
 
 function clearUnread(channelId) {
@@ -503,6 +530,7 @@ async function handleIncomingMessage(msg) {
       user_id: msg.user_id,
       author: authorName
     });
+    playBeep("incoming");
     return;
   }
 
@@ -510,10 +538,31 @@ async function handleIncomingMessage(msg) {
   const channel = allChannels.find((c) => c.id === msg.channel_id);
   const channelLabel = channel ? channel.name : `Salon #${msg.channel_id}`;
   showToast(channelLabel, `${authorName}: ${msg.body}`);
+  playBeep("incoming");
   if (browserNotificationsEnabled && "Notification" in window && Notification.permission === "granted") {
     new Notification(channelLabel, { body: `${authorName}: ${msg.body}` });
   }
   renderChannelsList(channelsList, channelSearchInput.value || "");
+}
+
+async function recoverAfterFocus() {
+  if (!supabaseClient) return;
+  const { data } = await supabaseClient.auth.getSession();
+  const user = data?.session?.user || null;
+  if (!user) {
+    setSessionUI(null);
+    return;
+  }
+  setSessionUI(user);
+  await ensureProfile(user);
+  await refreshSidebar();
+  if (currentChannel?.id) {
+    const fresh = allChannels.find((c) => c.id === currentChannel.id);
+    if (fresh) {
+      await selectChannel(fresh);
+    }
+  }
+  subscribeToInboxMessages();
 }
 
 function subscribeToInboxMessages() {
@@ -747,6 +796,11 @@ async function handleSendMessage(evt) {
   const body = messageInput.value.trim();
   if (!body || !currentChannel) return;
   const channelId = currentChannel.id;
+  const { data: sessionData } = await supabaseClient.auth.getSession();
+  if (!sessionData?.session) {
+    alert("Session expiree. Reconnecte-toi.");
+    return;
+  }
 
   if (!currentChannel.is_dm) {
     const ok = await ensureMembership(channelId, currentUser.id);
@@ -779,6 +833,7 @@ async function handleSendMessage(evt) {
   });
   messageInput.value = "";
   broadcastTyping(false);
+  playBeep("sent");
 }
 
 function broadcastTyping(isTyping) {
@@ -1029,6 +1084,8 @@ async function handleProfileSave() {
 
 async function init() {
   ensureSupabase();
+  document.addEventListener("pointerdown", initAudioContext, { once: true });
+  document.addEventListener("keydown", initAudioContext, { once: true });
   if (notificationsBtn) {
     notificationsBtn.textContent =
       "Notification" in window && Notification.permission === "granted" ? "Notif: ON" : "Notifications";
@@ -1112,6 +1169,20 @@ async function init() {
       await refreshSidebar();
       subscribeToInboxMessages();
     }
+  });
+
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden) {
+      wasHidden = true;
+      return;
+    }
+    if (wasHidden) {
+      wasHidden = false;
+      await recoverAfterFocus();
+    }
+  });
+  window.addEventListener("focus", async () => {
+    await recoverAfterFocus();
   });
 
   setInterval(async () => {
