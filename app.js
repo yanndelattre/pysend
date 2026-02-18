@@ -640,7 +640,7 @@ async function handleAuthSubmit(evt) {
 
   const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
-    showMessage("Connexion impossible. Vérifie tes identifiants.", true);
+    showMessage(`Connexion impossible: ${error.message}`, true);
     return;
   }
   await ensureProfile(data.user, displayName);

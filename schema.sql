@@ -127,10 +127,6 @@ create policy "channel_members_select_authenticated" on channel_members
       select 1 from channels c
       where c.id = channel_members.channel_id and c.is_dm = false
     )
-    or exists (
-      select 1 from channel_members me
-      where me.channel_id = channel_members.channel_id and me.user_id = auth.uid()
-    )
   );
 create policy "channel_members_insert_self_or_owner" on channel_members
   for insert with check (
