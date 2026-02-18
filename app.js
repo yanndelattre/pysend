@@ -426,7 +426,9 @@ async function selectChannel(channel) {
   favoriteBtn.classList.remove("hidden");
   favoriteBtn.textContent = favorites.has(channel.id) ? "★ Favori" : "☆ Favori";
 
-  await ensureMembership(channel.id, currentUser.id);
+  if (!channel.is_dm) {
+    await ensureMembership(channel.id, currentUser.id);
+  }
   await touchPresence(channel.id);
   if (presenceInterval) clearInterval(presenceInterval);
   presenceInterval = setInterval(() => touchPresence(channel.id), 30000);
@@ -581,13 +583,18 @@ async function pollLatestMessages(channelId) {
 }
 
 async function ensureMembership(channelId, userId) {
-  await supabaseClient.from("channel_members").upsert(
+  const { error } = await supabaseClient.from("channel_members").upsert(
     {
       channel_id: channelId,
       user_id: userId
     },
     { onConflict: "channel_id,user_id" }
   );
+  if (error) {
+    console.error("ensureMembership failed", error);
+    return false;
+  }
+  return true;
 }
 
 async function touchPresence(channelId) {
@@ -739,27 +746,39 @@ async function handleSendMessage(evt) {
   evt.preventDefault();
   const body = messageInput.value.trim();
   if (!body || !currentChannel) return;
+  const channelId = currentChannel.id;
+
+  if (!currentChannel.is_dm) {
+    const ok = await ensureMembership(channelId, currentUser.id);
+    if (!ok) {
+      alert("Impossible d'envoyer: tu n'as pas acces a ce salon.");
+      return;
+    }
+  }
 
   const { data, error } = await supabaseClient
     .from("messages")
     .insert({
-      channel_id: currentChannel.id,
+      channel_id: channelId,
       user_id: currentUser.id,
       body
     })
     .select()
     .single();
-  if (!error && data) {
-    appendMessage({
-      id: data.id,
-      body: data.body,
-      created_at: data.created_at,
-      user_id: data.user_id,
-      author: currentProfile?.display_name || currentUser.email || "Anonyme"
-    });
-    messageInput.value = "";
-    broadcastTyping(false);
+  if (error) {
+    console.error("send message failed", error);
+    alert(`Impossible d'envoyer le message: ${error.message}`);
+    return;
   }
+  appendMessage({
+    id: data.id,
+    body: data.body,
+    created_at: data.created_at,
+    user_id: data.user_id,
+    author: currentProfile?.display_name || currentUser.email || "Anonyme"
+  });
+  messageInput.value = "";
+  broadcastTyping(false);
 }
 
 function broadcastTyping(isTyping) {
