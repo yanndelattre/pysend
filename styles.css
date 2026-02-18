@@ -279,6 +279,14 @@ textarea {
   gap: 10px;
 }
 
+.typing-indicator {
+  min-height: 22px;
+  font-size: 18px;
+  color: var(--mint);
+  opacity: 0.9;
+  padding: 2px 6px;
+}
+
 .message-form input {
   flex: 1;
 }

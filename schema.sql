@@ -60,6 +60,23 @@ alter table channels add column if not exists description text;
 alter table channels add column if not exists icon text;
 alter table channel_members add column if not exists last_seen timestamptz;
 
+-- Realtime: ensure messages table is part of supabase_realtime publication
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table messages;
+  end if;
+exception
+  when undefined_object then
+    null;
+end $$;
+
 -- Enable RLS
 alter table profiles enable row level security;
 alter table channels enable row level security;

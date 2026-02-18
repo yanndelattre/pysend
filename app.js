@@ -30,6 +30,7 @@ const favoriteBtn = document.getElementById("favorite-btn");
 const messagesEl = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message-input");
+const typingIndicator = document.getElementById("typing-indicator");
 
 const profileModal = document.getElementById("profile-modal");
 const profileClose = document.getElementById("profile-close");
@@ -48,13 +49,18 @@ let currentUser = null;
 let currentProfile = null;
 let currentChannel = null;
 let messageSubscription = null;
+let typingSubscription = null;
 let presenceInterval = null;
+let messagePollInterval = null;
 let allChannels = [];
 let allFriends = [];
 let favorites = new Set();
 let onlineCounts = {};
 let isAnonymous = false;
 const messageIds = new Set();
+const typingUsers = new Map();
+let typingCleanupInterval = null;
+let lastTypingBroadcastAt = 0;
 
 function showMessage(text, isError = false) {
   authMsg.textContent = text;
@@ -148,6 +154,20 @@ function renderMessages(messages) {
   messageIds.clear();
   messages.forEach((msg) => appendMessage(msg));
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function renderTypingIndicator() {
+  const names = Array.from(typingUsers.values())
+    .map((entry) => entry.name)
+    .slice(0, 2);
+  if (names.length === 0) {
+    typingIndicator.textContent = "";
+    typingIndicator.classList.add("hidden");
+    return;
+  }
+  typingIndicator.classList.remove("hidden");
+  typingIndicator.textContent =
+    names.length === 1 ? `${names[0]} est en train d'ecrire...` : `${names.join(", ")} ecrivent...`;
 }
 
 function appendMessage(msg) {
@@ -338,6 +358,9 @@ async function selectChannel(channel) {
     renderMessages(mapped);
   }
   subscribeToMessages(channel.id);
+  subscribeToTyping(channel.id);
+  startMessagePolling(channel.id);
+  await pollLatestMessages(channel.id);
 }
 
 function subscribeToMessages(channelId) {
@@ -366,6 +389,60 @@ function subscribeToMessages(channelId) {
       }
     )
     .subscribe();
+}
+
+function subscribeToTyping(channelId) {
+  if (typingSubscription) {
+    supabaseClient.removeChannel(typingSubscription);
+  }
+  typingUsers.clear();
+  renderTypingIndicator();
+  typingSubscription = supabaseClient
+    .channel(`typing:channel:${channelId}`)
+    .on("broadcast", { event: "typing" }, ({ payload }) => {
+      if (!payload || payload.userId === currentUser?.id) return;
+      if (payload.channelId !== channelId) return;
+      if (payload.isTyping) {
+        typingUsers.set(payload.userId, {
+          name: payload.displayName || "Quelqu'un",
+          updatedAt: Date.now()
+        });
+      } else {
+        typingUsers.delete(payload.userId);
+      }
+      renderTypingIndicator();
+    })
+    .subscribe();
+}
+
+function startMessagePolling(channelId) {
+  if (messagePollInterval) clearInterval(messagePollInterval);
+  messagePollInterval = setInterval(async () => {
+    if (!currentChannel || currentChannel.id !== channelId) return;
+    await pollLatestMessages(channelId);
+  }, 2500);
+}
+
+async function pollLatestMessages(channelId) {
+  const { data, error } = await supabaseClient
+    .from("messages")
+    .select("id,body,created_at,user_id,profiles(display_name,email)")
+    .eq("channel_id", channelId)
+    .order("created_at", { ascending: true })
+    .limit(80);
+  if (error) {
+    console.error(error);
+    return;
+  }
+  (data || []).forEach((m) => {
+    appendMessage({
+      id: m.id,
+      body: m.body,
+      created_at: m.created_at,
+      user_id: m.user_id,
+      author: m.profiles?.display_name || m.profiles?.email || "Anonyme"
+    });
+  });
 }
 
 async function ensureMembership(channelId, userId) {
@@ -545,7 +622,22 @@ async function handleSendMessage(evt) {
       author: currentProfile?.display_name || currentUser.email || "Anonyme"
     });
     messageInput.value = "";
+    broadcastTyping(false);
   }
+}
+
+function broadcastTyping(isTyping) {
+  if (!typingSubscription || !currentChannel) return;
+  typingSubscription.send({
+    type: "broadcast",
+    event: "typing",
+    payload: {
+      channelId: currentChannel.id,
+      userId: currentUser.id,
+      displayName: currentProfile?.display_name || currentUser.email || "Anonyme",
+      isTyping
+    }
+  });
 }
 
 async function toggleFavorite(channelId) {
@@ -787,6 +879,11 @@ async function init() {
   signupBtn.addEventListener("click", handleSignUp);
   anonymousBtn.addEventListener("click", handleAnonymous);
   signoutBtn.addEventListener("click", async () => {
+    if (messagePollInterval) clearInterval(messagePollInterval);
+    if (presenceInterval) clearInterval(presenceInterval);
+    if (typingCleanupInterval) clearInterval(typingCleanupInterval);
+    if (messageSubscription) supabaseClient.removeChannel(messageSubscription);
+    if (typingSubscription) supabaseClient.removeChannel(typingSubscription);
     await supabaseClient.auth.signOut();
     setSessionUI(null);
   });
@@ -800,6 +897,20 @@ async function init() {
   newChannelBtn.addEventListener("click", () => channelNameInput.focus());
   addFriendBtn.addEventListener("click", handleAddFriend);
   messageForm.addEventListener("submit", handleSendMessage);
+  messageInput.addEventListener("input", () => {
+    if (!currentChannel) return;
+    const now = Date.now();
+    const hasText = messageInput.value.trim().length > 0;
+    if (!hasText) {
+      broadcastTyping(false);
+      return;
+    }
+    if (now - lastTypingBroadcastAt > 1200) {
+      lastTypingBroadcastAt = now;
+      broadcastTyping(true);
+    }
+  });
+  messageInput.addEventListener("blur", () => broadcastTyping(false));
   favoriteBtn.addEventListener("click", async () => {
     if (currentChannel) await toggleFavorite(currentChannel.id);
   });
@@ -840,6 +951,14 @@ async function init() {
       await refreshSidebar();
     }
   }, 60000);
+
+  typingCleanupInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of typingUsers.entries()) {
+      if (now - value.updatedAt > 3500) typingUsers.delete(key);
+    }
+    renderTypingIndicator();
+  }, 3000);
 }
 
 init();
