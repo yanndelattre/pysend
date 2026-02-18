@@ -24,7 +24,7 @@ const messagesEl = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message-input");
 
-let supabase = null;
+let supabaseClient = null;
 let currentUser = null;
 let currentChannel = null;
 let messageSubscription = null;
@@ -44,7 +44,7 @@ function ensureSupabase() {
     showMessage("Config Supabase manquante. Remplis config.js.", true);
     throw new Error("Missing Supabase config");
   }
-  supabase = createClient(config.supabaseUrl, config.supabaseAnonKey);
+  supabaseClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
 }
 
 function setSessionUI(user) {
@@ -63,20 +63,20 @@ function setSessionUI(user) {
 }
 
 async function ensureProfile(user, displayName = "") {
-  const { data: profile } = await supabase
+  const { data: profile } = await supabaseClient
     .from("profiles")
     .select("id, display_name")
     .eq("id", user.id)
     .maybeSingle();
 
   if (!profile) {
-    await supabase.from("profiles").insert({
+    await supabaseClient.from("profiles").insert({
       id: user.id,
       email: user.email,
       display_name: displayName || user.email?.split("@")[0] || "Pixel"
     });
   } else if (displayName && profile.display_name !== displayName) {
-    await supabase.from("profiles").update({ display_name: displayName }).eq("id", user.id);
+    await supabaseClient.from("profiles").update({ display_name: displayName }).eq("id", user.id);
   }
 }
 
@@ -124,7 +124,7 @@ function appendMessage(msg) {
 }
 
 async function loadChannels() {
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from("channels")
     .select("id,name,is_dm,created_at")
     .order("created_at", { ascending: false });
@@ -136,7 +136,7 @@ async function loadChannels() {
 }
 
 async function loadFriends() {
-  const { data: rels } = await supabase
+  const { data: rels } = await supabaseClient
     .from("friendships")
     .select("friend_id")
     .eq("user_id", currentUser.id);
@@ -144,7 +144,7 @@ async function loadFriends() {
   const friendIds = (rels || []).map((r) => r.friend_id).filter(Boolean);
   if (friendIds.length === 0) return [];
 
-  const { data: profiles } = await supabase
+  const { data: profiles } = await supabaseClient
     .from("profiles")
     .select("id,display_name,email")
     .in("id", friendIds);
@@ -187,7 +187,7 @@ async function selectChannel(channel) {
 
   await ensureMembership(channel.id, currentUser.id);
 
-  const { data: messages, error } = await supabase
+  const { data: messages, error } = await supabaseClient
     .from("messages")
     .select("id,body,created_at,user_id,profiles(display_name,email)")
     .eq("channel_id", channel.id)
@@ -207,16 +207,16 @@ async function selectChannel(channel) {
 
 function subscribeToMessages(channelId) {
   if (messageSubscription) {
-    supabase.removeChannel(messageSubscription);
+    supabaseClient.removeChannel(messageSubscription);
   }
-  messageSubscription = supabase
+  messageSubscription = supabaseClient
     .channel(`messages:channel:${channelId}`)
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "messages", filter: `channel_id=eq.${channelId}` },
       async (payload) => {
         const msg = payload.new;
-        const { data: profile } = await supabase
+        const { data: profile } = await supabaseClient
           .from("profiles")
           .select("display_name,email")
           .eq("id", msg.user_id)
@@ -233,7 +233,7 @@ function subscribeToMessages(channelId) {
 }
 
 async function ensureMembership(channelId, userId) {
-  await supabase.from("channel_members").upsert(
+  await supabaseClient.from("channel_members").upsert(
     {
       channel_id: channelId,
       user_id: userId
@@ -244,7 +244,7 @@ async function ensureMembership(channelId, userId) {
 
 async function openDirectMessage(friendId, friendLabel) {
   const pair = [currentUser.id, friendId].sort().join("|");
-  const { data: existing } = await supabase
+  const { data: existing } = await supabaseClient
     .from("channels")
     .select("id,name,is_dm")
     .eq("dm_pair", pair)
@@ -252,7 +252,7 @@ async function openDirectMessage(friendId, friendLabel) {
 
   let channel = existing;
   if (!channel) {
-    const { data: inserted, error } = await supabase
+    const { data: inserted, error } = await supabaseClient
       .from("channels")
       .insert({
         name: `DM: ${friendLabel}`,
@@ -281,7 +281,7 @@ async function handleAuthSubmit(evt) {
   const password = document.getElementById("password").value.trim();
   const displayName = document.getElementById("display-name").value.trim();
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     showMessage("Connexion impossible. Vérifie tes identifiants.", true);
     return;
@@ -297,7 +297,7 @@ async function handleSignUp() {
   const password = document.getElementById("password").value.trim();
   const displayName = document.getElementById("display-name").value.trim();
 
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
   if (error) {
     showMessage("Inscription impossible. Utilise un autre email.", true);
     return;
@@ -311,7 +311,7 @@ async function handleSignUp() {
 async function handleCreateChannel() {
   const name = channelNameInput.value.trim();
   if (!name) return;
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from("channels")
     .insert({ name, created_by: currentUser.id })
     .select()
@@ -330,7 +330,7 @@ async function handleAddFriend() {
   const email = friendEmailInput.value.trim().toLowerCase();
   if (!email) return;
 
-  const { data: profile } = await supabase
+  const { data: profile } = await supabaseClient
     .from("profiles")
     .select("id,display_name,email")
     .eq("email", email)
@@ -345,7 +345,7 @@ async function handleAddFriend() {
     return;
   }
 
-  const { error } = await supabase.from("friendships").upsert(
+  const { error } = await supabaseClient.from("friendships").upsert(
     {
       user_id: currentUser.id,
       friend_id: profile.id,
@@ -366,7 +366,7 @@ async function handleSendMessage(evt) {
   const body = messageInput.value.trim();
   if (!body || !currentChannel) return;
 
-  const { error } = await supabase.from("messages").insert({
+  const { error } = await supabaseClient.from("messages").insert({
     channel_id: currentChannel.id,
     user_id: currentUser.id,
     body
@@ -380,7 +380,7 @@ async function init() {
   authForm.addEventListener("submit", handleAuthSubmit);
   signupBtn.addEventListener("click", handleSignUp);
   signoutBtn.addEventListener("click", async () => {
-    await supabase.auth.signOut();
+    await supabaseClient.auth.signOut();
     setSessionUI(null);
   });
   createChannelBtn.addEventListener("click", handleCreateChannel);
@@ -388,7 +388,7 @@ async function init() {
   addFriendBtn.addEventListener("click", handleAddFriend);
   messageForm.addEventListener("submit", handleSendMessage);
 
-  const { data } = await supabase.auth.getSession();
+  const { data } = await supabaseClient.auth.getSession();
   const user = data?.session?.user || null;
   setSessionUI(user);
   if (user) {
@@ -396,7 +396,7 @@ async function init() {
     await refreshSidebar();
   }
 
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     const user = session?.user || null;
     setSessionUI(user);
     if (user) {
