@@ -112,19 +112,13 @@ create policy "channels_insert_authenticated" on channels
   for insert with check (auth.uid() is not null);
 
 -- Channel members:
--- allow authenticated to read for counts, allow users to join themselves
+-- users can only read their own membership rows
 drop policy if exists "channel_members_select_authenticated" on channel_members;
 drop policy if exists "channel_members_select_self" on channel_members;
 drop policy if exists "channel_members_insert_self_or_owner" on channel_members;
 drop policy if exists "channel_members_update_self" on channel_members;
 create policy "channel_members_select_authenticated" on channel_members
-  for select using (
-    user_id = auth.uid()
-    or exists (
-      select 1 from channels c
-      where c.id = channel_members.channel_id and c.is_dm = false
-    )
-  );
+  for select using (user_id = auth.uid());
 create policy "channel_members_insert_self_or_owner" on channel_members
   for insert with check (
     (
