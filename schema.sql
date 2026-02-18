@@ -101,7 +101,16 @@ create policy "profiles_update_own" on profiles
 drop policy if exists "channels_select_all" on channels;
 drop policy if exists "channels_insert_authenticated" on channels;
 create policy "channels_select_all" on channels
-  for select using (auth.uid() is not null);
+  for select using (
+    auth.uid() is not null
+    and (
+      is_dm = false
+      or exists (
+        select 1 from channel_members cm
+        where cm.channel_id = channels.id and cm.user_id = auth.uid()
+      )
+    )
+  );
 create policy "channels_insert_authenticated" on channels
   for insert with check (auth.uid() is not null);
 
@@ -112,10 +121,26 @@ drop policy if exists "channel_members_select_self" on channel_members;
 drop policy if exists "channel_members_insert_self_or_owner" on channel_members;
 drop policy if exists "channel_members_update_self" on channel_members;
 create policy "channel_members_select_authenticated" on channel_members
-  for select using (auth.uid() is not null);
+  for select using (
+    user_id = auth.uid()
+    or exists (
+      select 1 from channels c
+      where c.id = channel_members.channel_id and c.is_dm = false
+    )
+    or exists (
+      select 1 from channel_members me
+      where me.channel_id = channel_members.channel_id and me.user_id = auth.uid()
+    )
+  );
 create policy "channel_members_insert_self_or_owner" on channel_members
   for insert with check (
-    user_id = auth.uid()
+    (
+      user_id = auth.uid()
+      and exists (
+        select 1 from channels c
+        where c.id = channel_id and c.is_dm = false
+      )
+    )
     or exists (
       select 1 from channels c
       where c.id = channel_id and c.created_by = auth.uid()

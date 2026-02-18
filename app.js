@@ -8,6 +8,7 @@ const authMsg = document.getElementById("auth-msg");
 const signupBtn = document.getElementById("signup-btn");
 const signoutBtn = document.getElementById("signout-btn");
 const sessionEmail = document.getElementById("session-email");
+const notificationsBtn = document.getElementById("notifications-btn");
 const profileBtn = document.getElementById("profile-btn");
 const anonymousBtn = document.getElementById("anonymous-btn");
 
@@ -31,6 +32,7 @@ const messagesEl = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message-input");
 const typingIndicator = document.getElementById("typing-indicator");
+const toastContainer = document.getElementById("toast-container");
 
 const profileModal = document.getElementById("profile-modal");
 const profileClose = document.getElementById("profile-close");
@@ -49,6 +51,7 @@ let currentUser = null;
 let currentProfile = null;
 let currentChannel = null;
 let messageSubscription = null;
+let inboxSubscription = null;
 let typingSubscription = null;
 let presenceInterval = null;
 let messagePollInterval = null;
@@ -61,6 +64,9 @@ const messageIds = new Set();
 const typingUsers = new Map();
 let typingCleanupInterval = null;
 let lastTypingBroadcastAt = 0;
+const unreadByChannel = new Map();
+const baseTitle = document.title;
+let browserNotificationsEnabled = false;
 
 function showMessage(text, isError = false) {
   authMsg.textContent = text;
@@ -80,18 +86,72 @@ function ensureSupabase() {
   supabaseClient = createClient(config.supabaseUrl, config.supabaseAnonKey);
 }
 
+function updateDocumentTitle() {
+  const totalUnread = Array.from(unreadByChannel.values()).reduce((acc, n) => acc + n, 0);
+  document.title = totalUnread > 0 ? `(${totalUnread}) ${baseTitle}` : baseTitle;
+}
+
+function clearUnread(channelId) {
+  unreadByChannel.delete(channelId);
+  updateDocumentTitle();
+}
+
+function incrementUnread(channelId) {
+  unreadByChannel.set(channelId, (unreadByChannel.get(channelId) || 0) + 1);
+  updateDocumentTitle();
+}
+
+function showToast(title, body) {
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  const t = document.createElement("div");
+  t.className = "toast-title";
+  t.textContent = title;
+  const b = document.createElement("div");
+  b.className = "toast-body";
+  b.textContent = body;
+  toast.appendChild(t);
+  toast.appendChild(b);
+  toastContainer.appendChild(toast);
+  setTimeout(() => {
+    if (toast.parentNode) toast.parentNode.removeChild(toast);
+  }, 4500);
+}
+
+async function enableBrowserNotifications() {
+  if (!("Notification" in window)) {
+    showToast("Notifications", "Navigateur non compatible.");
+    return;
+  }
+  if (Notification.permission === "granted") {
+    browserNotificationsEnabled = true;
+    notificationsBtn.textContent = "Notif: ON";
+    showToast("Notifications", "Notifications navigateur actives.");
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  browserNotificationsEnabled = permission === "granted";
+  notificationsBtn.textContent = browserNotificationsEnabled ? "Notif: ON" : "Notif: OFF";
+  showToast(
+    "Notifications",
+    browserNotificationsEnabled ? "Permission accordee." : "Permission refusee."
+  );
+}
+
 function setSessionUI(user) {
   currentUser = user;
   isAnonymous = Boolean(user?.is_anonymous);
   if (user) {
     sessionEmail.textContent = user.email || (isAnonymous ? "Anonyme" : "");
     signoutBtn.classList.remove("hidden");
+    notificationsBtn.classList.remove("hidden");
     profileBtn.classList.remove("hidden");
     authPanel.classList.add("hidden");
     appPanel.classList.remove("hidden");
   } else {
     sessionEmail.textContent = "";
     signoutBtn.classList.add("hidden");
+    notificationsBtn.classList.add("hidden");
     profileBtn.classList.add("hidden");
     favoriteBtn.classList.add("hidden");
     authPanel.classList.remove("hidden");
@@ -196,10 +256,31 @@ function appendMessage(msg) {
 }
 
 async function loadChannels() {
-  const { data, error } = await supabaseClient
+  const { data: memberships, error: memberError } = await supabaseClient
+    .from("channel_members")
+    .select("channel_id")
+    .eq("user_id", currentUser.id);
+  if (memberError) {
+    console.error(memberError);
+    return [];
+  }
+
+  const memberIds = (memberships || []).map((m) => m.channel_id).filter(Boolean);
+  let query = supabaseClient
     .from("channels")
     .select("id,name,description,icon,created_by,is_dm,dm_pair,created_at")
+    .eq("is_dm", false)
     .order("created_at", { ascending: false });
+
+  if (memberIds.length > 0) {
+    query = supabaseClient
+      .from("channels")
+      .select("id,name,description,icon,created_by,is_dm,dm_pair,created_at")
+      .or(`is_dm.eq.false,id.in.(${memberIds.join(",")})`)
+      .order("created_at", { ascending: false });
+  }
+
+  const { data, error } = await query;
   if (error) {
     console.error(error);
     return [];
@@ -272,6 +353,10 @@ function renderChannelsList(list, query) {
     right.className = "channel-badge";
     const count = onlineCounts[channel.id] || 0;
     right.textContent = `${count} en ligne`;
+    const unread = unreadByChannel.get(channel.id) || 0;
+    const unreadBadge = document.createElement("span");
+    unreadBadge.className = "unread-badge" + (unread > 0 ? "" : " hidden");
+    unreadBadge.textContent = unread > 99 ? "99+" : String(unread || 0);
     const star = document.createElement("button");
     star.className = "btn small ghost";
     star.textContent = favorites.has(channel.id) ? "★" : "☆";
@@ -283,6 +368,7 @@ function renderChannelsList(list, query) {
     });
     div.appendChild(left);
     div.appendChild(right);
+    div.appendChild(unreadBadge);
     div.appendChild(star);
     div.addEventListener("click", async () => {
       await selectChannel(channel);
@@ -325,6 +411,7 @@ async function refreshSidebar() {
 
 async function selectChannel(channel) {
   currentChannel = channel;
+  clearUnread(channel.id);
   const creator = channel.created_by ? await getProfileById(channel.created_by) : null;
   const count = onlineCounts[channel.id] || 0;
   const icon = channel.icon || "💬";
@@ -388,6 +475,51 @@ function subscribeToMessages(channelId) {
         });
       }
     )
+    .subscribe();
+}
+
+async function handleIncomingMessage(msg) {
+  if (!msg || !currentUser) return;
+  if (msg.user_id === currentUser.id) return;
+
+  const isCurrentChannel = currentChannel && currentChannel.id === msg.channel_id;
+  const { data: profile } = await supabaseClient
+    .from("profiles")
+    .select("display_name,email")
+    .eq("id", msg.user_id)
+    .maybeSingle();
+  const authorName = profile?.display_name || profile?.email || "Anonyme";
+
+  if (isCurrentChannel) {
+    appendMessage({
+      id: msg.id,
+      body: msg.body,
+      created_at: msg.created_at,
+      user_id: msg.user_id,
+      author: authorName
+    });
+    return;
+  }
+
+  incrementUnread(msg.channel_id);
+  const channel = allChannels.find((c) => c.id === msg.channel_id);
+  const channelLabel = channel ? channel.name : `Salon #${msg.channel_id}`;
+  showToast(channelLabel, `${authorName}: ${msg.body}`);
+  if (browserNotificationsEnabled && "Notification" in window && Notification.permission === "granted") {
+    new Notification(channelLabel, { body: `${authorName}: ${msg.body}` });
+  }
+  renderChannelsList(channelsList, channelSearchInput.value || "");
+}
+
+function subscribeToInboxMessages() {
+  if (inboxSubscription) {
+    supabaseClient.removeChannel(inboxSubscription);
+  }
+  inboxSubscription = supabaseClient
+    .channel("messages:inbox")
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, async (payload) => {
+      await handleIncomingMessage(payload.new);
+    })
     .subscribe();
 }
 
@@ -874,6 +1006,9 @@ async function handleProfileSave() {
 
 async function init() {
   ensureSupabase();
+  notificationsBtn.textContent =
+    "Notification" in window && Notification.permission === "granted" ? "Notif: ON" : "Notifications";
+  browserNotificationsEnabled = "Notification" in window && Notification.permission === "granted";
 
   authForm.addEventListener("submit", handleAuthSubmit);
   signupBtn.addEventListener("click", handleSignUp);
@@ -883,10 +1018,14 @@ async function init() {
     if (presenceInterval) clearInterval(presenceInterval);
     if (typingCleanupInterval) clearInterval(typingCleanupInterval);
     if (messageSubscription) supabaseClient.removeChannel(messageSubscription);
+    if (inboxSubscription) supabaseClient.removeChannel(inboxSubscription);
     if (typingSubscription) supabaseClient.removeChannel(typingSubscription);
     await supabaseClient.auth.signOut();
+    unreadByChannel.clear();
+    updateDocumentTitle();
     setSessionUI(null);
   });
+  notificationsBtn.addEventListener("click", enableBrowserNotifications);
   profileBtn.addEventListener("click", async () => {
     await openProfile(currentUser.id);
   });
@@ -935,6 +1074,7 @@ async function init() {
   if (user) {
     await ensureProfile(user);
     await refreshSidebar();
+    subscribeToInboxMessages();
   }
 
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
@@ -943,6 +1083,7 @@ async function init() {
     if (nextUser) {
       await ensureProfile(nextUser);
       await refreshSidebar();
+      subscribeToInboxMessages();
     }
   });
 
