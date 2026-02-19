@@ -21,6 +21,7 @@
       </div>
       <div class="session">
         <span id="session-email" class="session-email"></span>
+        <button id="notifications-btn" class="btn small ghost">Notifications</button>
         <button id="profile-btn" class="btn small">Profil</button>
         <button id="signout-btn" class="btn small ghost hidden">Se déconnecter</button>
       </div>
@@ -66,6 +67,7 @@
                 <input id="channel-name" placeholder="Nom du salon" />
                 <input id="channel-icon" placeholder="Icone (ex: 💬)" />
                 <input id="channel-desc" placeholder="Description" />
+                <input id="channel-rules" placeholder="Regles du salon" />
                 <button id="create-channel-btn" class="btn small">Créer</button>
               </div>
             </div>
@@ -76,7 +78,7 @@
               <input id="friend-search" class="search" placeholder="Rechercher un contact..." />
               <div class="list" id="friends-list"></div>
               <div class="panel-footer">
-                <input id="friend-email" placeholder="Email d'un ami" />
+                <input id="friend-email" placeholder="Pseudo d'un ami" />
                 <button id="add-friend-btn" class="btn small">Ajouter</button>
               </div>
             </div>
@@ -89,6 +91,7 @@
                   <h2 id="channel-title">Choisir un salon</h2>
                   <p id="channel-meta" class="muted small">---</p>
                   <p id="channel-desc-view" class="muted small"></p>
+                  <p id="channel-rules-view" class="muted small"></p>
                 </div>
                 <button id="favorite-btn" class="btn small ghost hidden">☆ Favori</button>
               </div>
@@ -140,9 +143,14 @@
         </div>
       </div>
     </div>
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
 
     <script src="config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="app.js"></script>
   </body>
 </html>
+
+
+
+

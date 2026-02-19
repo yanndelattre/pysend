@@ -1,4 +1,4 @@
-const config = window.PYSEND_CONFIG || {};
+﻿const config = window.PYSEND_CONFIG || {};
 const { createClient } = window.supabase || {};
 
 const authPanel = document.getElementById("auth-panel");
@@ -19,6 +19,7 @@ const newChannelBtn = document.getElementById("new-channel-btn");
 const channelNameInput = document.getElementById("channel-name");
 const channelIconInput = document.getElementById("channel-icon");
 const channelDescInput = document.getElementById("channel-desc");
+const channelRulesInput = document.getElementById("channel-rules");
 const channelSearchInput = document.getElementById("channel-search");
 const friendSearchInput = document.getElementById("friend-search");
 const friendEmailInput = document.getElementById("friend-email");
@@ -27,6 +28,7 @@ const addFriendBtn = document.getElementById("add-friend-btn");
 const channelTitle = document.getElementById("channel-title");
 const channelMeta = document.getElementById("channel-meta");
 const channelDescView = document.getElementById("channel-desc-view");
+const channelRulesView = document.getElementById("channel-rules-view");
 const favoriteBtn = document.getElementById("favorite-btn");
 const messagesEl = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
@@ -69,6 +71,7 @@ const baseTitle = document.title;
 let browserNotificationsEnabled = false;
 let audioCtx = null;
 let wasHidden = false;
+let currentChannelRoles = new Map();
 
 function showMessage(text, isError = false) {
   authMsg.textContent = text;
@@ -202,28 +205,38 @@ function updateAnonymousUI() {
 async function ensureProfile(user, displayName = "") {
   const { data: profile } = await supabaseClient
     .from("profiles")
-    .select("id, display_name, avatar_url, bio, is_anonymous, email")
+    .select("id, display_name, avatar_url, bio, is_anonymous, email, global_role")
     .eq("id", user.id)
     .maybeSingle();
 
   const defaultName = displayName || user.email?.split("@")[0] || "Anonyme";
+  const creatorEmail = (config.creatorEmail || "").toLowerCase();
+  const shouldBeCreator = creatorEmail && user.email && user.email.toLowerCase() === creatorEmail;
   if (!profile) {
     await supabaseClient.from("profiles").insert({
       id: user.id,
       email: user.email,
       display_name: defaultName,
-      is_anonymous: Boolean(user.is_anonymous)
+      is_anonymous: Boolean(user.is_anonymous),
+      global_role: shouldBeCreator ? "creator" : "user"
     });
     currentProfile = {
       id: user.id,
       email: user.email,
       display_name: defaultName,
-      is_anonymous: Boolean(user.is_anonymous)
+      is_anonymous: Boolean(user.is_anonymous),
+      global_role: shouldBeCreator ? "creator" : "user"
     };
   } else if (displayName && profile.display_name !== displayName) {
-    await supabaseClient.from("profiles").update({ display_name: displayName }).eq("id", user.id);
-    currentProfile = { ...profile, display_name: displayName };
+    const updates = { display_name: displayName };
+    if (shouldBeCreator && profile.global_role !== "creator") updates.global_role = "creator";
+    await supabaseClient.from("profiles").update(updates).eq("id", user.id);
+    currentProfile = { ...profile, ...updates };
   } else {
+    if (shouldBeCreator && profile.global_role !== "creator") {
+      await supabaseClient.from("profiles").update({ global_role: "creator" }).eq("id", user.id);
+      profile.global_role = "creator";
+    }
     currentProfile = profile;
   }
 }
@@ -237,6 +250,89 @@ function formatDate(iso) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function sanitizeRole(role) {
+  if (role === "creator" || role === "admin" || role === "guardian") return role;
+  return "user";
+}
+
+function getEffectiveRoleForUser(userId, channel, globalRole = "user") {
+  if (globalRole === "creator") return "creator";
+  if (channel?.created_by === userId) return "admin";
+  return sanitizeRole(currentChannelRoles.get(userId));
+}
+
+function getMyRoleInCurrentChannel() {
+  return getEffectiveRoleForUser(currentUser?.id, currentChannel, currentProfile?.global_role || "user");
+}
+
+async function loadChannelRoles(channelId) {
+  const { data, error } = await supabaseClient
+    .from("channel_roles")
+    .select("user_id,role")
+    .eq("channel_id", channelId);
+  if (error) {
+    console.error(error);
+    return new Map();
+  }
+  const map = new Map();
+  (data || []).forEach((row) => map.set(row.user_id, sanitizeRole(row.role)));
+  return map;
+}
+
+async function countGuardians(channelId) {
+  const { count, error } = await supabaseClient
+    .from("channel_roles")
+    .select("user_id", { count: "exact", head: true })
+    .eq("channel_id", channelId)
+    .eq("role", "guardian");
+  if (error) return 0;
+  return count || 0;
+}
+
+async function checkChannelBan(channelId, userId) {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabaseClient
+    .from("channel_bans")
+    .select("id,banned_until,reason")
+    .eq("channel_id", channelId)
+    .eq("user_id", userId)
+    .gt("banned_until", nowIso)
+    .order("banned_until", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error(error);
+    return null;
+  }
+  return data || null;
+}
+
+async function checkPlatformBan(userId) {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabaseClient
+    .from("platform_bans")
+    .select("id,banned_until,reason")
+    .eq("user_id", userId)
+    .gt("banned_until", nowIso)
+    .order("banned_until", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error(error);
+    return null;
+  }
+  return data || null;
+}
+
+async function enforcePlatformBanIfAny(user) {
+  const ban = await checkPlatformBan(user.id);
+  if (!ban) return false;
+  await supabaseClient.auth.signOut();
+  setSessionUI(null);
+  showMessage(`Compte temporairement banni jusqu'au ${formatDate(ban.banned_until)}.`, true);
+  return true;
 }
 
 function renderMessages(messages) {
@@ -268,6 +364,9 @@ function appendMessage(msg) {
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
+  const roleSquare = document.createElement("span");
+  roleSquare.className = `role-square role-${sanitizeRole(msg.role)}`;
+  meta.appendChild(roleSquare);
   const author = document.createElement("span");
   author.className = "author";
   author.textContent = msg.author || "?";
@@ -298,14 +397,14 @@ async function loadChannels() {
   const memberIds = (memberships || []).map((m) => m.channel_id).filter(Boolean);
   let query = supabaseClient
     .from("channels")
-    .select("id,name,description,icon,created_by,is_dm,dm_pair,created_at")
+    .select("id,name,description,rules,icon,created_by,is_dm,dm_pair,created_at")
     .eq("is_dm", false)
     .order("created_at", { ascending: false });
 
   if (memberIds.length > 0) {
     query = supabaseClient
       .from("channels")
-      .select("id,name,description,icon,created_by,is_dm,dm_pair,created_at")
+      .select("id,name,description,rules,icon,created_by,is_dm,dm_pair,created_at")
       .or(`is_dm.eq.false,id.in.(${memberIds.join(",")})`)
       .order("created_at", { ascending: false });
   }
@@ -442,11 +541,24 @@ async function refreshSidebar() {
 async function selectChannel(channel) {
   currentChannel = channel;
   clearUnread(channel.id);
+  const activeBan = await checkChannelBan(channel.id, currentUser.id);
+  if (activeBan) {
+    channelTitle.textContent = `Acces refuse: ${channel.name}`;
+    channelMeta.textContent = `Banni jusqu'au ${formatDate(activeBan.banned_until)}`;
+    channelDescView.textContent = activeBan.reason ? `Raison: ${activeBan.reason}` : "";
+    channelRulesView.textContent = "";
+    messagesEl.innerHTML = "";
+    messageInput.disabled = true;
+    return;
+  }
+  messageInput.disabled = false;
+  currentChannelRoles = await loadChannelRoles(channel.id);
   const creator = channel.created_by ? await getProfileById(channel.created_by) : null;
   const count = onlineCounts[channel.id] || 0;
   const icon = channel.icon || "💬";
   channelTitle.textContent = `${icon} ${channel.name}`;
   channelDescView.textContent = channel.description || "";
+  channelRulesView.textContent = channel.rules ? `Regles: ${channel.rules}` : "";
   channelMeta.textContent = `${channel.is_dm ? "Salon privé" : "Salon public"} · Créé par ${
     creator?.display_name || creator?.email || "?"
   } · ${count} en ligne`;
@@ -462,7 +574,7 @@ async function selectChannel(channel) {
 
   const { data: messages, error } = await supabaseClient
     .from("messages")
-    .select("id,body,created_at,user_id,profiles(display_name,email)")
+    .select("id,body,created_at,user_id,profiles(display_name,email,global_role)")
     .eq("channel_id", channel.id)
     .order("created_at", { ascending: true })
     .limit(50);
@@ -472,7 +584,8 @@ async function selectChannel(channel) {
       body: m.body,
       created_at: m.created_at,
       user_id: m.user_id,
-      author: m.profiles?.display_name || m.profiles?.email || "Anonyme"
+      author: m.profiles?.display_name || m.profiles?.email || "Anonyme",
+      role: getEffectiveRoleForUser(m.user_id, channel, m.profiles?.global_role || "user")
     }));
     renderMessages(mapped);
   }
@@ -495,7 +608,7 @@ function subscribeToMessages(channelId) {
         const msg = payload.new;
         const { data: profile } = await supabaseClient
           .from("profiles")
-          .select("display_name,email")
+          .select("display_name,email,global_role")
           .eq("id", msg.user_id)
           .maybeSingle();
         appendMessage({
@@ -503,7 +616,8 @@ function subscribeToMessages(channelId) {
           body: msg.body,
           created_at: msg.created_at,
           user_id: msg.user_id,
-          author: profile?.display_name || profile?.email || "Anonyme"
+          author: profile?.display_name || profile?.email || "Anonyme",
+          role: getEffectiveRoleForUser(msg.user_id, currentChannel, profile?.global_role || "user")
         });
       }
     )
@@ -517,7 +631,7 @@ async function handleIncomingMessage(msg) {
   const isCurrentChannel = currentChannel && currentChannel.id === msg.channel_id;
   const { data: profile } = await supabaseClient
     .from("profiles")
-    .select("display_name,email")
+    .select("display_name,email,global_role")
     .eq("id", msg.user_id)
     .maybeSingle();
   const authorName = profile?.display_name || profile?.email || "Anonyme";
@@ -528,7 +642,8 @@ async function handleIncomingMessage(msg) {
       body: msg.body,
       created_at: msg.created_at,
       user_id: msg.user_id,
-      author: authorName
+      author: authorName,
+      role: getEffectiveRoleForUser(msg.user_id, currentChannel, profile?.global_role || "user")
     });
     playBeep("incoming");
     return;
@@ -553,6 +668,9 @@ async function recoverAfterFocus() {
     setSessionUI(null);
     return;
   }
+  if (await enforcePlatformBanIfAny(user)) {
+    return;
+  }
   setSessionUI(user);
   await ensureProfile(user);
   await refreshSidebar();
@@ -563,6 +681,29 @@ async function recoverAfterFocus() {
     }
   }
   subscribeToInboxMessages();
+  await showPendingNotices();
+}
+
+async function showPendingNotices() {
+  const { data, error } = await supabaseClient
+    .from("moderation_notices")
+    .select("id,notice_type,reason,details,created_at")
+    .eq("user_id", currentUser.id)
+    .eq("seen", false)
+    .order("created_at", { ascending: false })
+    .limit(20);
+  if (error) {
+    console.error(error);
+    return;
+  }
+  (data || []).forEach((n) => {
+    const title = n.notice_type === "platform_ban" ? "Ban plateforme" : "Moderation";
+    const body = n.details || n.reason || "Nouvelle notification";
+    showToast(title, body);
+  });
+  if ((data || []).length > 0) {
+    await supabaseClient.from("moderation_notices").update({ seen: true }).eq("user_id", currentUser.id).eq("seen", false);
+  }
 }
 
 function subscribeToInboxMessages() {
@@ -612,7 +753,7 @@ function startMessagePolling(channelId) {
 async function pollLatestMessages(channelId) {
   const { data, error } = await supabaseClient
     .from("messages")
-    .select("id,body,created_at,user_id,profiles(display_name,email)")
+    .select("id,body,created_at,user_id,profiles(display_name,email,global_role)")
     .eq("channel_id", channelId)
     .order("created_at", { ascending: true })
     .limit(80);
@@ -626,7 +767,8 @@ async function pollLatestMessages(channelId) {
       body: m.body,
       created_at: m.created_at,
       user_id: m.user_id,
-      author: m.profiles?.display_name || m.profiles?.email || "Anonyme"
+      author: m.profiles?.display_name || m.profiles?.email || "Anonyme",
+      role: getEffectiveRoleForUser(m.user_id, currentChannel, m.profiles?.global_role || "user")
     });
   });
 }
@@ -702,6 +844,9 @@ async function handleAuthSubmit(evt) {
     showMessage(`Connexion impossible: ${error.message}`, true);
     return;
   }
+  if (await enforcePlatformBanIfAny(data.user)) {
+    return;
+  }
   await ensureProfile(data.user, displayName);
   setSessionUI(data.user);
   await refreshSidebar();
@@ -712,6 +857,9 @@ async function handleAnonymous() {
   try {
     const { data, error } = await supabaseClient.auth.signInAnonymously();
     if (error) throw error;
+    if (await enforcePlatformBanIfAny(data.user)) {
+      return;
+    }
     await ensureProfile(data.user, "");
     setSessionUI(data.user);
     await refreshSidebar();
@@ -742,6 +890,7 @@ async function handleCreateChannel() {
   const name = channelNameInput.value.trim();
   const icon = channelIconInput.value.trim();
   const description = channelDescInput.value.trim();
+  const rules = channelRulesInput.value.trim();
   if (!name) return;
   const { data, error } = await supabaseClient
     .from("channels")
@@ -749,6 +898,7 @@ async function handleCreateChannel() {
       name,
       icon: icon || null,
       description: description || null,
+      rules: rules || null,
       created_by: currentUser.id
     })
     .select()
@@ -761,24 +911,30 @@ async function handleCreateChannel() {
   channelNameInput.value = "";
   channelIconInput.value = "";
   channelDescInput.value = "";
+  channelRulesInput.value = "";
   await ensureMembership(data.id, currentUser.id);
+  await supabaseClient.from("channel_roles").upsert(
+    { channel_id: data.id, user_id: currentUser.id, role: "admin", granted_by: currentUser.id },
+    { onConflict: "channel_id,user_id" }
+  );
   await selectChannel(data);
   await refreshSidebar();
 }
 
 async function handleAddFriend() {
   if (isAnonymous) return;
-  const email = friendEmailInput.value.trim().toLowerCase();
-  if (!email) return;
+  const pseudo = friendEmailInput.value.trim();
+  if (!pseudo) return;
 
   const { data: profile } = await supabaseClient
     .from("profiles")
     .select("id,display_name,email")
-    .eq("email", email)
+    .ilike("display_name", pseudo)
+    .limit(1)
     .maybeSingle();
 
   if (!profile) {
-    alert("Aucun compte trouvé avec cet email.");
+    alert("Aucun compte trouve avec ce pseudo.");
     return;
   }
   if (profile.id === currentUser.id) {
@@ -809,6 +965,11 @@ async function handleSendMessage(evt) {
       return;
     }
   }
+  const activeBan = await checkChannelBan(channelId, currentUser.id);
+  if (activeBan) {
+    alert(`Tu es banni de ce salon jusqu'au ${formatDate(activeBan.banned_until)}.`);
+    return;
+  }
 
   const { data, error } = await supabaseClient
     .from("messages")
@@ -829,7 +990,8 @@ async function handleSendMessage(evt) {
     body: data.body,
     created_at: data.created_at,
     user_id: data.user_id,
-    author: currentProfile?.display_name || currentUser.email || "Anonyme"
+    author: currentProfile?.display_name || currentUser.email || "Anonyme",
+    role: getMyRoleInCurrentChannel()
   });
   messageInput.value = "";
   broadcastTyping(false);
@@ -864,7 +1026,7 @@ async function toggleFavorite(channelId) {
 async function getProfileById(userId) {
   const { data } = await supabaseClient
     .from("profiles")
-    .select("id,display_name,email,avatar_url,bio")
+    .select("id,display_name,email,avatar_url,bio,global_role")
     .eq("id", userId)
     .maybeSingle();
   return data;
@@ -924,6 +1086,134 @@ async function rejectFriendRequest(requesterId) {
     .delete()
     .eq("user_id", requesterId)
     .eq("friend_id", currentUser.id);
+}
+
+function canManageChannelRoles() {
+  const me = getMyRoleInCurrentChannel();
+  return me === "admin" || me === "creator";
+}
+
+function canModerateChannel() {
+  const me = getMyRoleInCurrentChannel();
+  return me === "guardian" || me === "admin" || me === "creator";
+}
+
+async function warnUser(targetId) {
+  const reason = prompt("Raison de la mise en garde :");
+  if (!reason) return;
+  await supabaseClient.from("moderation_notices").insert({
+    user_id: targetId,
+    issued_by: currentUser.id,
+    channel_id: currentChannel?.id || null,
+    notice_type: "warning",
+    reason
+  });
+  alert("Mise en garde envoyee.");
+}
+
+async function tempBanUser(targetId) {
+  const me = getMyRoleInCurrentChannel();
+  const minAllowed = me === "guardian" ? 5 : 1;
+  const maxAllowed = 24 * 60;
+  const minutes = Number(prompt(`Duree du ban en minutes (${minAllowed}-${maxAllowed}) :`, "60"));
+  if (!Number.isFinite(minutes) || minutes < minAllowed || minutes > maxAllowed) {
+    alert("Duree invalide.");
+    return;
+  }
+  const reason = prompt("Raison du ban :") || "";
+  const until = new Date(Date.now() + minutes * 60000).toISOString();
+  await supabaseClient.from("channel_bans").insert({
+    channel_id: currentChannel.id,
+    user_id: targetId,
+    banned_by: currentUser.id,
+    reason,
+    banned_until: until
+  });
+  await supabaseClient.from("moderation_notices").insert({
+    user_id: targetId,
+    issued_by: currentUser.id,
+    channel_id: currentChannel.id,
+    notice_type: "channel_ban",
+    reason,
+    details: `Banni jusqu'au ${formatDate(until)}`
+  });
+  alert("Utilisateur banni temporairement.");
+}
+
+async function requestBanToAdmin(targetId) {
+  const reason = prompt("Motif de la demande de bannissement :");
+  if (!reason) return;
+  await supabaseClient.from("moderation_requests").insert({
+    channel_id: currentChannel.id,
+    requester_id: currentUser.id,
+    target_id: targetId,
+    reason,
+    status: "pending"
+  });
+  alert("Demande envoyee.");
+}
+
+async function promoteGuardian(targetId) {
+  const count = await countGuardians(currentChannel.id);
+  if (count >= 6) {
+    alert("Maximum de 6 guardians par salon.");
+    return;
+  }
+  await supabaseClient.from("channel_roles").upsert(
+    {
+      channel_id: currentChannel.id,
+      user_id: targetId,
+      role: "guardian",
+      granted_by: currentUser.id
+    },
+    { onConflict: "channel_id,user_id" }
+  );
+  currentChannelRoles.set(targetId, "guardian");
+  alert("Promotion en guardian effectuee.");
+}
+
+async function platformBanUser(targetId) {
+  const me = getMyRoleInCurrentChannel();
+  if (me !== "admin" && me !== "creator") return;
+  const days = Number(prompt("Ban plateforme (jours, 7 a 60) :", "7"));
+  if (!Number.isFinite(days) || days < 7 || days > 60) {
+    alert("Duree invalide.");
+    return;
+  }
+  const reason = prompt("Cause du bannissement plateforme :");
+  if (!reason) return;
+  const until = new Date(Date.now() + days * 86400000).toISOString();
+  await supabaseClient.from("platform_bans").insert({
+    user_id: targetId,
+    banned_by: currentUser.id,
+    reason,
+    banned_until: until
+  });
+  await supabaseClient.from("moderation_notices").insert({
+    user_id: targetId,
+    issued_by: currentUser.id,
+    channel_id: currentChannel?.id || null,
+    notice_type: "platform_ban",
+    reason,
+    details: `Banni de la plateforme jusqu'au ${formatDate(until)}`
+  });
+  alert("Ban plateforme applique.");
+}
+
+async function deleteCurrentChannel() {
+  if (!currentChannel) return;
+  const me = getMyRoleInCurrentChannel();
+  if (me !== "admin" && me !== "creator") return;
+  const ok = confirm(`Supprimer le salon ${currentChannel.name} ?`);
+  if (!ok) return;
+  await supabaseClient.from("channels").delete().eq("id", currentChannel.id);
+  currentChannel = null;
+  messagesEl.innerHTML = "";
+  channelTitle.textContent = "Choisir un salon";
+  channelMeta.textContent = "---";
+  channelDescView.textContent = "";
+  channelRulesView.textContent = "";
+  await refreshSidebar();
 }
 
 async function loadFriendRequests() {
@@ -986,6 +1276,15 @@ async function openProfile(userId) {
   profileSave.classList.toggle("hidden", !isSelf);
 
   profileAction.innerHTML = "";
+  const viewedRole = getEffectiveRoleForUser(
+    userId,
+    currentChannel,
+    profile.global_role || "user"
+  );
+  const roleInfo = document.createElement("div");
+  roleInfo.className = "list-item";
+  roleInfo.innerHTML = `<span class="role-square role-${viewedRole}"></span><span>Role: ${viewedRole}</span>`;
+  profileAction.appendChild(roleInfo);
   if (!isSelf && !isAnonymous) {
     const status = await getFriendStatus(userId);
     const btn = document.createElement("button");
@@ -1012,6 +1311,55 @@ async function openProfile(userId) {
       });
     }
     profileAction.appendChild(btn);
+
+    if (currentChannel && canModerateChannel()) {
+      const warnBtn = document.createElement("button");
+      warnBtn.className = "btn small ghost";
+      warnBtn.textContent = "Mise en garde";
+      warnBtn.addEventListener("click", async () => warnUser(userId));
+      profileAction.appendChild(warnBtn);
+
+      const banBtn = document.createElement("button");
+      banBtn.className = "btn small ghost";
+      banBtn.textContent = "Ban temporaire";
+      banBtn.addEventListener("click", async () => tempBanUser(userId));
+      profileAction.appendChild(banBtn);
+
+      if (getMyRoleInCurrentChannel() === "guardian") {
+        const reqBtn = document.createElement("button");
+        reqBtn.className = "btn small ghost";
+        reqBtn.textContent = "Demander ban admin";
+        reqBtn.addEventListener("click", async () => requestBanToAdmin(userId));
+        profileAction.appendChild(reqBtn);
+      }
+    }
+
+    if (currentChannel && canManageChannelRoles() && viewedRole === "user") {
+      const promoteBtn = document.createElement("button");
+      promoteBtn.className = "btn small ghost";
+      promoteBtn.textContent = "Promouvoir guardian";
+      promoteBtn.addEventListener("click", async () => promoteGuardian(userId));
+      profileAction.appendChild(promoteBtn);
+    }
+
+    if (currentChannel && canManageChannelRoles()) {
+      const pbanBtn = document.createElement("button");
+      pbanBtn.className = "btn small ghost";
+      pbanBtn.textContent = "Ban plateforme";
+      pbanBtn.addEventListener("click", async () => platformBanUser(userId));
+      profileAction.appendChild(pbanBtn);
+    }
+  }
+
+  if (currentChannel && canManageChannelRoles()) {
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn small";
+    delBtn.textContent = "Supprimer ce salon";
+    delBtn.addEventListener("click", async () => {
+      await deleteCurrentChannel();
+      closeModal();
+    });
+    profileAction.appendChild(delBtn);
   }
 
   if (isSelf) {
@@ -1156,18 +1504,26 @@ async function init() {
   const user = data?.session?.user || null;
   setSessionUI(user);
   if (user) {
+    if (await enforcePlatformBanIfAny(user)) {
+      return;
+    }
     await ensureProfile(user);
     await refreshSidebar();
     subscribeToInboxMessages();
+    await showPendingNotices();
   }
 
   supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     const nextUser = session?.user || null;
     setSessionUI(nextUser);
     if (nextUser) {
+      if (await enforcePlatformBanIfAny(nextUser)) {
+        return;
+      }
       await ensureProfile(nextUser);
       await refreshSidebar();
       subscribeToInboxMessages();
+      await showPendingNotices();
     }
   });
 

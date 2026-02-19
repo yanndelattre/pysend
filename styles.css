@@ -312,10 +312,47 @@ textarea {
   color: var(--accent);
 }
 
+.role-square {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #00000066;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.role-user {
+  background: #8a8a8a;
+}
+
+.role-guardian {
+  background: #e53935;
+}
+
+.role-admin {
+  background: #1e88e5;
+}
+
+.role-creator {
+  background: #f4c542;
+}
+
 .channel-badge {
   font-size: 14px;
   opacity: 0.7;
   margin-left: auto;
+}
+
+.unread-badge {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid var(--line);
+  display: inline-grid;
+  place-items: center;
+  font-size: 14px;
+  background: var(--accent);
+  color: #001018;
 }
 
 .modal {
@@ -326,6 +363,34 @@ textarea {
   place-items: center;
   z-index: 30;
   padding: 24px;
+}
+
+.toast-container {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+  width: min(320px, calc(100% - 32px));
+}
+
+.toast {
+  border: 2px solid var(--line);
+  background: #101624;
+  box-shadow: 6px 6px 0 var(--shadow);
+  padding: 10px 12px;
+}
+
+.toast-title {
+  font-family: "Press Start 2P", monospace;
+  font-size: 10px;
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+
+.toast-body {
+  font-size: 18px;
 }
 
 .modal-card {
